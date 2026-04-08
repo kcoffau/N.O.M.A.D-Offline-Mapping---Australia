@@ -1,5 +1,10 @@
 # N.O.M.A.D-Offline-Mapping---Australia
 Produces on 1st of every month a PMTILES extract of Australia only
+
+TO DOWNLOAD: REFER TO LINKS IN THE LATEST RELEASE
+
+Below Info is for if people want to copy it and make their own PMTILE generator.
+
 # Australia PMTiles Generator
 
 Automatically generates monthly Australian offline map tiles for use with [Project N.O.M.A.D.](https://github.com/Crosstalk-Solutions/project-nomad) and any other [PMTiles](https://docs.protomaps.com/pmtiles/)-compatible mapping tool.
