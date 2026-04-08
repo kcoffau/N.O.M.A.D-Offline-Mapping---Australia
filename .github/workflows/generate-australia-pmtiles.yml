@@ -13,43 +13,36 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Get current date
-        id: date
-        run: echo "DATE=$(date +%Y%m%d)" >> $GITHUB_OUTPUT
-
-      - name: Get yesterday's date (Protomaps build may lag by a day)
-        id: yesterday
-        run: echo "DATE=$(date -d yesterday +%Y%m%d)" >> $GITHUB_OUTPUT
-
-      - name: Install pmtiles CLI
+      - name: Get dates
+        id: dates
         run: |
-          wget -q https://github.com/protomaps/go-pmtiles/releases/latest/download/go-pmtiles_Linux_x86_64.tar.gz
-          tar -xzf go-pmtiles_Linux_x86_64.tar.gz
-          chmod +x pmtiles
-          ./pmtiles --version
+          echo "TODAY=$(date +%Y%m%d)" >> $GITHUB_OUTPUT
+          echo "YESTERDAY=$(date -d yesterday +%Y%m%d)" >> $GITHUB_OUTPUT
 
       - name: Check available disk space
         run: df -h
 
-      - name: Extract Australia from Protomaps daily build
-        run: |
-          # Try today's build first, fall back to yesterday's
-          TODAY_URL="https://build.protomaps.com/${{ steps.date.outputs.DATE }}.pmtiles"
-          YESTERDAY_URL="https://build.protomaps.com/${{ steps.yesterday.outputs.DATE }}.pmtiles"
+      - name: Pull pmtiles Docker image
+        run: docker pull ghcr.io/protomaps/go-pmtiles:main
 
-          echo "Trying today's build: $TODAY_URL"
+      - name: Resolve Protomaps build URL
+        id: source
+        run: |
+          TODAY_URL="https://build.protomaps.com/${{ steps.dates.outputs.TODAY }}.pmtiles"
+          YESTERDAY_URL="https://build.protomaps.com/${{ steps.dates.outputs.YESTERDAY }}.pmtiles"
+
           if curl --head --silent --fail "$TODAY_URL" > /dev/null; then
-            SOURCE_URL="$TODAY_URL"
-            echo "Using today's build"
+            echo "URL=$TODAY_URL" >> $GITHUB_OUTPUT
+            echo "Using today's build: $TODAY_URL"
           else
-            echo "Today's build not available, falling back to yesterday's"
-            SOURCE_URL="$YESTERDAY_URL"
+            echo "URL=$YESTERDAY_URL" >> $GITHUB_OUTPUT
+            echo "Falling back to yesterday's build: $YESTERDAY_URL"
           fi
 
-          echo "Extracting Australia bbox from: $SOURCE_URL"
-          # Bounding box covers mainland Australia + Tasmania
-          # West: 113.0, South: -43.7, East: 154.0, North: -10.7
-          ./pmtiles extract "$SOURCE_URL" australia.pmtiles \
+      - name: Extract Australia bbox
+        run: |
+          docker run --rm -v "$PWD":/data ghcr.io/protomaps/go-pmtiles:main \
+            extract "${{ steps.source.outputs.URL }}" /data/australia.pmtiles \
             --bbox=113.0,-43.7,154.0,-10.7 \
             --maxzoom=14
 
@@ -60,7 +53,7 @@ jobs:
         run: |
           cat > metadata.json << EOF
           {
-            "generated": "${{ steps.date.outputs.DATE }}",
+            "generated": "${{ steps.dates.outputs.TODAY }}",
             "source": "Protomaps / OpenStreetMap",
             "license": "ODbL",
             "region": "Australia",
@@ -72,10 +65,8 @@ jobs:
           EOF
           cat metadata.json
 
-      - name: Install rclone for R2 upload
-        run: |
-          curl https://rclone.org/install.sh | sudo bash
-          rclone version
+      - name: Install rclone
+        run: curl https://rclone.org/install.sh | sudo bash
 
       - name: Configure rclone for Cloudflare R2
         run: |
@@ -94,21 +85,17 @@ jobs:
         run: |
           BUCKET="${{ secrets.R2_BUCKET_NAME }}"
 
-          # Upload the pmtiles file with cache headers
           rclone copyto australia.pmtiles "r2:${BUCKET}/australia/australia.pmtiles" \
             --s3-no-check-bucket \
             --header-upload "Cache-Control: public, max-age=2592000" \
             --progress
 
-          # Upload metadata
           rclone copyto metadata.json "r2:${BUCKET}/australia/metadata.json" \
             --s3-no-check-bucket \
             --header-upload "Cache-Control: public, max-age=3600" \
             --header-upload "Content-Type: application/json"
 
-          # Upload a "latest" pointer (always points to most recent)
-          cp metadata.json latest.json
-          rclone copyto latest.json "r2:${BUCKET}/australia/latest.json" \
+          rclone copyto metadata.json "r2:${BUCKET}/australia/latest.json" \
             --s3-no-check-bucket \
             --header-upload "Cache-Control: public, max-age=3600" \
             --header-upload "Content-Type: application/json"
@@ -116,24 +103,24 @@ jobs:
           echo "Upload complete!"
           echo "File available at: https://${{ secrets.R2_PUBLIC_URL }}/australia/australia.pmtiles"
 
-      - name: Create GitHub Release entry (for changelog tracking)
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: maps-${{ steps.date.outputs.DATE }}
-          name: Australia Maps - ${{ steps.date.outputs.DATE }}
+          tag_name: maps-${{ steps.dates.outputs.TODAY }}
+          name: Australia Maps - ${{ steps.dates.outputs.TODAY }}
           body: |
-            ## Australian PMTiles - ${{ steps.date.outputs.DATE }}
+            ## Australian PMTiles - ${{ steps.dates.outputs.TODAY }}
 
             Generated from Protomaps / OpenStreetMap data.
 
-            **Download URL:**
+            **Download:**
             `https://${{ secrets.R2_PUBLIC_URL }}/australia/australia.pmtiles`
 
             **Metadata:**
-            `https://${{ secrets.R2_PUBLIC_URL }}/australia/metadata.json`
+            `https://${{ secrets.R2_PUBLIC_URL }}/australia/latest.json`
 
             **Coverage:** Mainland Australia + Tasmania
-            **Bounding box:** 113.0, -43.7, 154.0, -10.7
+            **Bbox:** 113.0, -43.7, 154.0, -10.7
             **Max zoom:** 14
-            **License:** ODbL (OpenStreetMap)
+            **License:** ODbL
           make_latest: true
